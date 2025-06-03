@@ -30,11 +30,11 @@ byte bell[] = {
 
 bool alarm_state = true;
 bool ch1_current_state;
-bool ch1_last_state = !ch1_current_state;
+bool ch1_last_state;
 
 bool pump_state = false;
 bool ch2_current_state;
-bool ch2_last_state = !ch2_current_state;
+bool ch2_last_state;
 
 void setup()
 {
@@ -102,7 +102,7 @@ void loop()
   {
     lcd.setCursor(7, 1);
     digitalWrite(valve, HIGH);
-    // delay(VALVE_DELAY);
+    delay(VALVE_DELAY);
     digitalWrite(pump, HIGH);
     lcd.print("ON ");
   }
@@ -110,7 +110,7 @@ void loop()
   {
     lcd.setCursor(7, 1);
     digitalWrite(pump, LOW);
-    // delay(VALVE_DELAY);
+    delay(VALVE_DELAY);
     digitalWrite(valve, LOW);
     lcd.print("OFF");
   }
