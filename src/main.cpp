@@ -178,7 +178,14 @@ void handleOutputs()
   }
   else
   {
-    if (pump_running)
+    if (valve_opening)
+    {
+      valve_opening = false;
+      digitalWrite(valve, LOW);
+      valve_timer = millis();
+      valve_closing = true;
+    }
+    else if (pump_running)
     {
       digitalWrite(pump, LOW);
       pump_running = false;
