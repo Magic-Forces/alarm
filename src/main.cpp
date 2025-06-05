@@ -18,13 +18,19 @@
 
 bool alarm_state = true;
 bool ch1_current_state;
-bool ch1_last_state;
+bool ch1_last_state = HIGH;
+unsigned long ch1_debounce_time = 0;
 
 bool pump_state = false;
 bool ch2_current_state;
-bool ch2_last_state;
+bool ch2_last_state = HIGH;
+unsigned long ch2_debounce_time = 0;
 
 bool last_ups_state = true;
+
+unsigned long valve_timer = 0;
+bool valve_opening = false;
+bool valve_closing = false;
 
 void setup()
 {
@@ -40,64 +46,81 @@ void setup()
   pinMode(signal, OUTPUT);
 }
 
-void loop()
+void handleButtons()
 {
-  handleContinuousAlarm(signal);
+  bool ch1_reading = digitalRead(ch1);
 
-  if (isContinuousAlarmActive())
+  if (ch1_reading != ch1_last_state)
   {
-    ch1_current_state = digitalRead(ch1);
-    if (ch1_last_state == HIGH && ch1_current_state == LOW)
+    ch1_debounce_time = millis();
+  }
+
+  if ((millis() - ch1_debounce_time) > DEBOUNCE)
+  {
+    if (ch1_reading != ch1_current_state)
     {
-      stopContinuousAlarm(signal);
+      ch1_current_state = ch1_reading;
 
-      if (alarm_state == true)
+      if (ch1_current_state == LOW)
       {
-        alarm_state = false;
-
-        delay(100);
-        playBeep("alarm", alarm_state, signal);
-
-        if (pump_state == true)
+        if (isContinuousAlarmActive())
         {
-          pump_state = false;
+          stopContinuousAlarm(signal);
+
+          if (alarm_state == true)
+          {
+            alarm_state = false;
+            playBeep(DEVICE_ALARM, alarm_state, signal);
+
+            if (pump_state == true)
+            {
+              pump_state = false;
+            }
+          }
+        }
+        else
+        {
+          alarm_state = !alarm_state;
+          playBeep(DEVICE_ALARM, alarm_state, signal);
+
+          if (alarm_state == true && pump_state == true)
+          {
+            pump_state = false;
+          }
         }
       }
-
-      delay(DEBOUNCE);
     }
-    ch1_last_state = ch1_current_state;
   }
+  ch1_last_state = ch1_reading;
 
   if (!isContinuousAlarmActive())
   {
-    ch1_current_state = digitalRead(ch1);
-    if (ch1_last_state == HIGH && ch1_current_state == LOW)
-    {
-      alarm_state = !alarm_state;
-      playBeep("alarm", alarm_state, signal);
+    bool ch2_reading = digitalRead(ch2);
 
-      if (alarm_state == true && pump_state == true)
-      {
-        pump_state = false;
-      }
-      delay(DEBOUNCE);
-    }
-    ch1_last_state = ch1_current_state;
-
-    ch2_current_state = digitalRead(ch2);
-    if (ch2_last_state == HIGH && ch2_current_state == LOW)
+    if (ch2_reading != ch2_last_state)
     {
-      if (alarm_state == false)
-      {
-        pump_state = !pump_state;
-        playBeep("pump", pump_state, signal);
-      }
-      delay(DEBOUNCE);
+      ch2_debounce_time = millis();
     }
-    ch2_last_state = ch2_current_state;
+
+    if ((millis() - ch2_debounce_time) > DEBOUNCE)
+    {
+      if (ch2_reading != ch2_current_state)
+      {
+        ch2_current_state = ch2_reading;
+
+        if (ch2_current_state == LOW && alarm_state == false)
+        {
+          pump_state = !pump_state;
+          playBeep(DEVICE_PUMP, pump_state, signal);
+        }
+      }
+    }
+    ch2_last_state = ch2_reading;
   }
+}
 
+void handleAlarmTriggers()
+{
   if (alarm_state == true && !isContinuousAlarmActive())
   {
     int pir0_value = analogRead(pir0);
@@ -130,26 +153,50 @@ void loop()
   }
 
   last_ups_state = current_ups_state;
+}
 
-  if (alarm_state == true)
-  {
-    digitalWrite(led, HIGH);
-  }
-  else
-  {
-    digitalWrite(led, LOW);
-  }
+void handleOutputs()
+{
+  digitalWrite(led, alarm_state ? HIGH : LOW);
+
+  static bool pump_running = false;
 
   if (pump_state == true && alarm_state == false)
   {
-    digitalWrite(valve, HIGH);
-    delay(VALVE_DELAY);
-    digitalWrite(pump, HIGH);
+    if (!pump_running && !valve_opening)
+    {
+      digitalWrite(valve, HIGH);
+      valve_timer = millis();
+      valve_opening = true;
+    }
+    else if (valve_opening && (millis() - valve_timer >= VALVE_DELAY))
+    {
+      digitalWrite(pump, HIGH);
+      pump_running = true;
+      valve_opening = false;
+    }
   }
   else
   {
-    digitalWrite(pump, LOW);
-    delay(VALVE_DELAY);
-    digitalWrite(valve, LOW);
+    if (pump_running)
+    {
+      digitalWrite(pump, LOW);
+      pump_running = false;
+      valve_timer = millis();
+      valve_closing = true;
+    }
+    else if (valve_closing && (millis() - valve_timer >= VALVE_DELAY))
+    {
+      digitalWrite(valve, LOW);
+      valve_closing = false;
+    }
   }
+}
+
+void loop()
+{
+  handleContinuousAlarm(signal);
+  handleButtons();
+  handleAlarmTriggers();
+  handleOutputs();
 }

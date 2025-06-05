@@ -5,37 +5,71 @@ static unsigned long alarmStartTime = 0;
 static unsigned long lastToneTime = 0;
 static bool toneState = false;
 
-void playBeep(String device, bool state, int signalPin)
+static bool beepActive = false;
+static unsigned long beepStartTime = 0;
+static int beepCount = 0;
+static int targetBeeps = 0;
+static int beepTone = 0;
+static int beepPin = 0;
+static bool beepOn = false;
+static unsigned long beepStateTime = 0;
+
+void playBeep(DeviceType device, bool state, int signalPin)
 {
-    if (continuousAlarmActive)
+    if (continuousAlarmActive || beepActive)
         return;
 
-    int tone_freq;
-    int beep_count;
-
-    if (device == "alarm")
+    if (device == DEVICE_ALARM)
     {
-        tone_freq = ALARM_TONE;
-        beep_count = state ? 2 : 1;
+        beepTone = ALARM_TONE;
+        targetBeeps = state ? 2 : 1;
     }
-    else if (device == "pump")
+    else if (device == DEVICE_PUMP)
     {
-        tone_freq = PUMP_TONE;
-        beep_count = state ? 1 : 2;
+        beepTone = PUMP_TONE;
+        targetBeeps = state ? 1 : 2;
     }
     else
     {
         return;
     }
 
-    for (int i = 0; i < beep_count; i++)
+    beepActive = true;
+    beepPin = signalPin;
+    beepCount = 0;
+    beepOn = false;
+    beepStartTime = millis();
+    beepStateTime = millis();
+}
+
+void handleBeep()
+{
+    if (!beepActive)
+        return;
+
+    unsigned long currentTime = millis();
+
+    if (!beepOn && beepCount < targetBeeps)
     {
-        tone(signalPin, tone_freq, BEEP_DURATION);
-        delay(BEEP_DURATION);
-        if (i < beep_count - 1)
+        tone(beepPin, beepTone);
+        beepOn = true;
+        beepStateTime = currentTime;
+    }
+    else if (beepOn && (currentTime - beepStateTime >= BEEP_DURATION))
+    {
+        noTone(beepPin);
+        beepOn = false;
+        beepCount++;
+        beepStateTime = currentTime;
+
+        if (beepCount >= targetBeeps)
         {
-            delay(BEEP_PAUSE);
+            beepActive = false;
         }
+    }
+    else if (!beepOn && beepCount < targetBeeps && (currentTime - beepStateTime >= BEEP_PAUSE))
+    {
+        beepStateTime = currentTime;
     }
 }
 
@@ -63,12 +97,15 @@ bool isContinuousAlarmActive()
 
 void handleContinuousAlarm(int signalPin)
 {
+    handleBeep();
+
     if (!continuousAlarmActive)
         return;
 
     unsigned long currentTime = millis();
+    unsigned long elapsedTime = currentTime - alarmStartTime;
 
-    if (currentTime - alarmStartTime >= CONTINUOUS_ALARM_DURATION)
+    if (elapsedTime >= CONTINUOUS_ALARM_DURATION)
     {
         stopContinuousAlarm(signalPin);
         return;
