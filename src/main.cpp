@@ -67,22 +67,35 @@ void setup()
 
     // --- RTC synchronization with compile time ---
     RtcDateTime compiled = RtcDateTime(__DATE__, __TIME__);
+    bool rtcError = false;
+
     if (!Rtc.IsDateTimeValid())
     {
+        rtcError = true;
         Rtc.SetDateTime(compiled); // Set to compile time if RTC invalid
     }
     if (Rtc.GetIsWriteProtected())
     {
+        rtcError = true;
         Rtc.SetIsWriteProtected(false); // Allow writing time
     }
     if (!Rtc.GetIsRunning())
     {
+        rtcError = true;
         Rtc.SetIsRunning(true); // Start RTC oscillator if stopped
     }
     RtcDateTime now = Rtc.GetDateTime();
     if (now < compiled)
     {
+        rtcError = true;
         Rtc.SetDateTime(compiled); // Correct RTC if it's behind compile time
+    }
+
+    // Signal RTC error if any occurred
+    if (rtcError)
+    {
+        beep(4, 250); // 4 medium beeps - RTC error
+        delay(500);
     }
     // --- End RTC synchronization ---
 
