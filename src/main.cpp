@@ -5,10 +5,10 @@
 // #define CH2 3
 #define PIR 4       // PIR sensor input (LOW when motion detected)
 #define REED 5      // Reed sensor input (LOW when door closed, HIGH when door opened)
-#define SIREN_PIN 6 // Alarm siren output pin
+#define SIREN_PIN 6 // Alarm siren output pin (LOW = relay ON, HIGH = relay OFF)
 // #define UPS 7
 // #define PUMP 8
-#define BUZZER 9 // Buzzer pin for state change notifications
+#define BUZZER 9 // Buzzer pin for state change notifications (LOW = relay ON, HIGH = relay OFF)
 #define CLK 10   // DS1302 Clock pin
 #define DAT 11   // DS1302 Data pin
 #define RST 12   // DS1302 Reset pin
@@ -31,9 +31,9 @@ bool buttonPressed = false;         // Debounce flag for remote button
 bool autoArmedToday = false;        // Flag to ensure auto-arm happens only once per day
 
 // Timing constants (milliseconds)
-const unsigned long DEBOUNCE_TIME = 100;        // Debounce time for RF receiver
-const unsigned long ALARM_DURATION = 60000;     // Siren duration: 60 seconds
-const unsigned long RTC_CHECK_INTERVAL = 60000; // Auto-arm check interval: 60 seconds
+const unsigned long DEBOUNCE_TIME = 100;         // Debounce time for RF receiver
+const unsigned long ALARM_DURATION = 180000;     // Siren duration:  3 minutes
+const unsigned long RTC_CHECK_INTERVAL = 600000; // Auto-arm check interval: 10 minutes
 
 // RTC setup
 ThreeWire myWire(DAT, CLK, RST);  // ThreeWire interface for DS1302
@@ -50,7 +50,6 @@ bool hasTimeElapsed(unsigned long startTime, unsigned long duration); // Timer h
 
 void setup()
 {
-
     // Configure input and output pins
     pinMode(CH1, INPUT_PULLUP);
     pinMode(PIR, INPUT_PULLUP);
@@ -59,9 +58,9 @@ void setup()
     pinMode(BUZZER, OUTPUT);
     pinMode(LED, OUTPUT);
 
-    // Initialize outputs to default OFF state
-    digitalWrite(SIREN_PIN, LOW);
-    digitalWrite(BUZZER, LOW);
+    // Initialize outputs to default OFF state (HIGH = relay OFF for LOW-active relays)
+    digitalWrite(SIREN_PIN, HIGH); // Relay OFF - siren disabled
+    digitalWrite(BUZZER, HIGH);    // Relay OFF - buzzer disabled
 
     // Initialize RTC module
     Rtc.Begin();
@@ -114,7 +113,7 @@ void loop()
         // After siren duration, stop siren and revert to ARMED
         if (hasTimeElapsed(alarmTriggerTime, ALARM_DURATION))
         {
-            digitalWrite(SIREN_PIN, LOW);
+            digitalWrite(SIREN_PIN, HIGH); // Turn OFF siren relay
             alarmState = ALARM_ARMED;
         }
         break;
@@ -195,13 +194,13 @@ void triggerAlarm()
 {
     alarmState = ALARM_TRIGGERED;
     alarmTriggerTime = millis();
-    digitalWrite(SIREN_PIN, HIGH);
+    digitalWrite(SIREN_PIN, LOW); // Turn ON siren relay (LOW = active)
 }
 
 void disarmAlarm()
 {
     alarmState = ALARM_OFF;
-    digitalWrite(SIREN_PIN, LOW);
+    digitalWrite(SIREN_PIN, HIGH); // Turn OFF siren relay (HIGH = inactive)
     digitalWrite(LED, HIGH);
     beep(2, 200);
     RtcDateTime now = Rtc.GetDateTime();
@@ -219,7 +218,12 @@ void beep(int times, int duration)
         duration = 5000;
     for (int i = 0; i < times; i++)
     {
-        tone(BUZZER, 2000, duration);
-        delay(duration + 100);
+        digitalWrite(BUZZER, LOW); // Turn ON buzzer relay
+        delay(duration);
+        digitalWrite(BUZZER, HIGH); // Turn OFF buzzer relay
+        if (i < times - 1)          // Don't delay after last beep
+        {
+            delay(100);
+        }
     }
 }
