@@ -1,209 +1,225 @@
 #include <Arduino.h>
-#include <AudioFeedback.h>
+#include <RtcDS1302.h>
 
-#define ch1 2
-#define ch2 3
-#define ups 4
-#define led 5
-#define valve 6
-#define pump 7
-#define signal 8
+#define CH1 2 // RF receiver output (push button from remote)
+// #define CH2 3
+#define PIR 4       // PIR sensor input (LOW when motion detected)
+#define REED 5      // Reed sensor input (LOW when door closed, HIGH when door opened)
+#define SIREN_PIN 6 // Alarm siren output pin
+// #define UPS 7
+// #define PUMP 8
+#define BUZZER 9 // Buzzer pin for state change notifications
+#define CLK 10   // DS1302 Clock pin
+#define DAT 11   // DS1302 Data pin
+#define RST 12   // DS1302 Reset pin
+#define LED 13   // LED indicator (LOW = alarm on, HIGH = alarm off)
 
-#define pir0 A0
-#define pir1 A1
+// System states
+enum AlarmState
+{
+    ALARM_OFF,      // System disarmed
+    ALARM_ARMED,    // System armed, waiting for trigger
+    ALARM_TRIGGERED // Alarm triggered, siren active
+};
 
-#define VALVE_DELAY 2000
-#define DEBOUNCE 50
-#define PIR_THRESHOLD 500
+// Global variables
+AlarmState alarmState = ALARM_OFF;  // Current alarm state
+unsigned long lastButtonPress = 0;  // Timestamp of last remote button press
+unsigned long alarmTriggerTime = 0; // Timestamp when alarm was triggered
+unsigned long lastRtcCheck = 0;     // Timestamp of last auto-arm time check
+bool buttonPressed = false;         // Debounce flag for remote button
+bool autoArmedToday = false;        // Flag to ensure auto-arm happens only once per day
 
-bool alarm_state = true;
-bool ch1_current_state;
-bool ch1_last_state = HIGH;
-unsigned long ch1_debounce_time = 0;
+// Timing constants (milliseconds)
+const unsigned long DEBOUNCE_TIME = 100;        // Debounce time for RF receiver
+const unsigned long ALARM_DURATION = 60000;     // Siren duration: 60 seconds
+const unsigned long RTC_CHECK_INTERVAL = 60000; // Auto-arm check interval: 60 seconds
 
-bool pump_state = false;
-bool ch2_current_state;
-bool ch2_last_state = HIGH;
-unsigned long ch2_debounce_time = 0;
+// RTC setup
+ThreeWire myWire(DAT, CLK, RST);  // ThreeWire interface for DS1302
+RtcDS1302<ThreeWire> Rtc(myWire); // RTC instance
 
-bool last_ups_state = true;
-
-unsigned long valve_timer = 0;
-bool valve_opening = false;
-bool valve_closing = false;
+// Function declarations
+void checkRemoteButton();                                             // Check if remote button was pressed
+void checkAutoArm();                                                  // Auto-arm logic after 22:00
+void armAlarm();                                                      // Manually arm the system
+void disarmAlarm();                                                   // Disarm the system
+void triggerAlarm();                                                  // Trigger the siren
+void beep(int times, int duration);                                   // Sound buzzer a number of times
+bool hasTimeElapsed(unsigned long startTime, unsigned long duration); // Timer helper
 
 void setup()
 {
-  pinMode(ch1, INPUT_PULLUP);
-  pinMode(ch2, INPUT_PULLUP);
-  pinMode(ups, INPUT_PULLUP);
-  pinMode(pir0, INPUT);
-  pinMode(pir1, INPUT);
 
-  pinMode(led, OUTPUT);
-  pinMode(pump, OUTPUT);
-  pinMode(valve, OUTPUT);
-  pinMode(signal, OUTPUT);
-}
+    // Configure input and output pins
+    pinMode(CH1, INPUT_PULLUP);
+    pinMode(PIR, INPUT_PULLUP);
+    pinMode(REED, INPUT_PULLUP);
+    pinMode(SIREN_PIN, OUTPUT);
+    pinMode(BUZZER, OUTPUT);
+    pinMode(LED, OUTPUT);
 
-void handleButtons()
-{
-  bool ch1_reading = digitalRead(ch1);
+    // Initialize outputs to default OFF state
+    digitalWrite(SIREN_PIN, LOW);
+    digitalWrite(BUZZER, LOW);
 
-  if (ch1_reading != ch1_last_state)
-  {
-    ch1_debounce_time = millis();
-  }
+    // Initialize RTC module
+    Rtc.Begin();
 
-  if ((millis() - ch1_debounce_time) > DEBOUNCE)
-  {
-    if (ch1_reading != ch1_current_state)
+    // --- RTC synchronization with compile time ---
+    RtcDateTime compiled = RtcDateTime(__DATE__, __TIME__);
+    if (!Rtc.IsDateTimeValid())
     {
-      ch1_current_state = ch1_reading;
-
-      if (ch1_current_state == LOW)
-      {
-        if (isContinuousAlarmActive())
-        {
-          stopContinuousAlarm(signal);
-
-          if (alarm_state == true)
-          {
-            alarm_state = false;
-            playBeep(DEVICE_ALARM, alarm_state, signal);
-
-            if (pump_state == true)
-            {
-              pump_state = false;
-            }
-          }
-        }
-        else
-        {
-          alarm_state = !alarm_state;
-          playBeep(DEVICE_ALARM, alarm_state, signal);
-
-          if (alarm_state == true && pump_state == true)
-          {
-            pump_state = false;
-          }
-        }
-      }
+        Rtc.SetDateTime(compiled); // Set to compile time if RTC invalid
     }
-  }
-  ch1_last_state = ch1_reading;
-
-  if (!isContinuousAlarmActive())
-  {
-    bool ch2_reading = digitalRead(ch2);
-
-    if (ch2_reading != ch2_last_state)
+    if (Rtc.GetIsWriteProtected())
     {
-      ch2_debounce_time = millis();
+        Rtc.SetIsWriteProtected(false); // Allow writing time
     }
-
-    if ((millis() - ch2_debounce_time) > DEBOUNCE)
+    if (!Rtc.GetIsRunning())
     {
-      if (ch2_reading != ch2_current_state)
-      {
-        ch2_current_state = ch2_reading;
-
-        if (ch2_current_state == LOW && alarm_state == false)
-        {
-          pump_state = !pump_state;
-          playBeep(DEVICE_PUMP, pump_state, signal);
-        }
-      }
+        Rtc.SetIsRunning(true); // Start RTC oscillator if stopped
     }
-    ch2_last_state = ch2_reading;
-  }
-}
-
-void handleAlarmTriggers()
-{
-  if (alarm_state == true && !isContinuousAlarmActive())
-  {
-    int pir0_value = analogRead(pir0);
-    int pir1_value = analogRead(pir1);
-    bool ups_state = digitalRead(ups);
-
-    if (pir0_value > PIR_THRESHOLD || pir1_value > PIR_THRESHOLD || ups_state == LOW)
+    RtcDateTime now = Rtc.GetDateTime();
+    if (now < compiled)
     {
-      startContinuousAlarm();
+        Rtc.SetDateTime(compiled); // Correct RTC if it's behind compile time
     }
-  }
+    // --- End RTC synchronization ---
 
-  bool current_ups_state = digitalRead(ups);
-
-  if (alarm_state == false)
-  {
-    if (current_ups_state == LOW && last_ups_state == true)
-    {
-      if (pump_state == true)
-      {
-        pump_state = false;
-      }
-      startContinuousAlarm();
-    }
-
-    if (current_ups_state == HIGH && last_ups_state == false && isContinuousAlarmActive())
-    {
-      stopContinuousAlarm(signal);
-    }
-  }
-
-  last_ups_state = current_ups_state;
-}
-
-void handleOutputs()
-{
-  digitalWrite(led, alarm_state ? HIGH : LOW);
-
-  static bool pump_running = false;
-
-  if (pump_state == true && alarm_state == false)
-  {
-    if (!pump_running && !valve_opening)
-    {
-      digitalWrite(valve, HIGH);
-      valve_timer = millis();
-      valve_opening = true;
-    }
-    else if (valve_opening && (millis() - valve_timer >= VALVE_DELAY))
-    {
-      digitalWrite(pump, HIGH);
-      pump_running = true;
-      valve_opening = false;
-    }
-  }
-  else
-  {
-    if (valve_opening)
-    {
-      valve_opening = false;
-      digitalWrite(valve, LOW);
-      valve_timer = millis();
-      valve_closing = true;
-    }
-    else if (pump_running)
-    {
-      digitalWrite(pump, LOW);
-      pump_running = false;
-      valve_timer = millis();
-      valve_closing = true;
-    }
-    else if (valve_closing && (millis() - valve_timer >= VALVE_DELAY))
-    {
-      digitalWrite(valve, LOW);
-      valve_closing = false;
-    }
-  }
+    // Immediately trigger alarm on startup
+    triggerAlarm();
 }
 
 void loop()
 {
-  handleContinuousAlarm(signal);
-  handleButtons();
-  handleAlarmTriggers();
-  handleOutputs();
+    checkRemoteButton(); // Handle remote arming/disarming
+    checkAutoArm();      // Handle automatic arming at night
+
+    switch (alarmState)
+    {
+    case ALARM_OFF:
+        // Do nothing when system is disarmed
+        break;
+
+    case ALARM_ARMED:
+        // If motion detected or door opened, trigger alarm
+        if (digitalRead(PIR) == LOW || digitalRead(REED) == HIGH)
+        {
+            triggerAlarm();
+        }
+        break;
+
+    case ALARM_TRIGGERED:
+        // After siren duration, stop siren and revert to ARMED
+        if (hasTimeElapsed(alarmTriggerTime, ALARM_DURATION))
+        {
+            digitalWrite(SIREN_PIN, LOW);
+            alarmState = ALARM_ARMED;
+        }
+        break;
+    }
+}
+
+void checkAutoArm()
+{
+    // Only check RTC periodically
+    if (!hasTimeElapsed(lastRtcCheck, RTC_CHECK_INTERVAL))
+    {
+        return;
+    }
+    lastRtcCheck = millis();
+
+    RtcDateTime now = Rtc.GetDateTime();
+
+    // Reset daily flag at midnight
+    if (now.Hour() == 0 && autoArmedToday)
+    {
+        autoArmedToday = false;
+    }
+
+    // Conditions: after 22:00, not yet auto-armed today, system OFF, door closed
+    if (now.Hour() >= 22 && !autoArmedToday && alarmState == ALARM_OFF && digitalRead(REED) == LOW)
+    {
+        beep(3, 150);
+        delay(500);
+        alarmState = ALARM_ARMED;
+        digitalWrite(LED, LOW);
+        autoArmedToday = true;
+    }
+}
+
+void checkRemoteButton()
+{
+    // Debounce and detect falling edge on remote button
+    if (digitalRead(CH1) == LOW && !buttonPressed && hasTimeElapsed(lastButtonPress, DEBOUNCE_TIME))
+    {
+        buttonPressed = true;
+        lastButtonPress = millis();
+
+        // Toggle alarm state on button press
+        if (alarmState == ALARM_OFF)
+        {
+            armAlarm();
+        }
+        else
+        {
+            disarmAlarm();
+        }
+    }
+    if (digitalRead(CH1) == HIGH)
+    {
+        buttonPressed = false; // Reset debounce flag
+    }
+}
+
+bool hasTimeElapsed(unsigned long startTime, unsigned long duration)
+{
+    return (millis() - startTime) >= duration; // Return true if specified duration passed
+}
+
+void armAlarm()
+{
+    // Prevent arming if door is open
+    if (digitalRead(REED) == HIGH)
+    {
+        beep(1, 1000);
+        return;
+    }
+    alarmState = ALARM_ARMED;
+    digitalWrite(LED, LOW);
+    beep(1, 200);
+}
+
+void triggerAlarm()
+{
+    alarmState = ALARM_TRIGGERED;
+    alarmTriggerTime = millis();
+    digitalWrite(SIREN_PIN, HIGH);
+}
+
+void disarmAlarm()
+{
+    alarmState = ALARM_OFF;
+    digitalWrite(SIREN_PIN, LOW);
+    digitalWrite(LED, HIGH);
+    beep(2, 200);
+    RtcDateTime now = Rtc.GetDateTime();
+    // Reset daily auto-arm flag if after 22:00
+    if (now.Hour() >= 22)
+    {
+        autoArmedToday = false;
+    }
+}
+
+void beep(int times, int duration)
+{
+    // Limit beep duration to maximum
+    if (duration > 5000)
+        duration = 5000;
+    for (int i = 0; i < times; i++)
+    {
+        tone(BUZZER, 2000, duration);
+        delay(duration + 100);
+    }
 }
